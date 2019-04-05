@@ -1,0 +1,643 @@
+/**
+* Dotaz na sestavení rozvahy a výsledovky s hodnotami po měsících a roku
+*
+* V cloudu Flexibee lze použít jen příkaz select.
+*/
+WITH RECURSIVE rok AS (
+	SELECT 2017 -- EXTRACT (YEAR FROM CURRENT_TIMESTAMP) -- 2020, 2018
+), curr_ucetobdobi AS (SELECT iducetobdobi FROM nucetobdobi
+	/**
+	* Pouze jedno iducetobdobi by měla být platné v jedenom roce
+	*/				   
+	WHERE EXTRACT (YEAR FROM platioddata) <= (SELECT * FROM rok) 
+	AND EXTRACT (YEAR FROM platidodata) >= (SELECT * FROM rok)
+	-- LIMIT 1
+), idsestavy_roz AS (SELECT idsestavy FROM usestavy
+	/**
+	* Pouze jedna sestava by měla být platné v jedenom roce
+	*/
+	WHERE typsesk = 'typSestavy.rozvaha'
+	AND platiod <= (SELECT * FROM rok)
+	AND platido >= (SELECT * FROM rok)
+	-- LIMIT 1				 
+), idsestavy_vys AS (SELECT idsestavy FROM usestavy
+	/**
+	* Pouze jedna sestava by měla být platné v jedenom roce
+	*/					 
+	WHERE typsesk = 'typSestavy.vysledov'
+	AND platiod <= (SELECT * FROM rok)
+	AND platido >= (SELECT * FROM rok)
+	-- LIMIT 1				 
+), rec_usessumace (idsessumace, idsesradkysum, idsesradky, nazev, oznaceni, prevratznam, idsestavy, hloubka ) AS (
+	/**
+	* Jednotlivým řádkům přiřadí jejich pořadí (hloubka) ve struktuře sumace výkazů
+	*/
+	SELECT idsessumace, idsesradkysum, usessumace.idsesradky, usesradky.nazev AS nazev, usesradky.oznaceni AS oznaceni, prevratznam, idsestavy, 1 AS hloubka
+	FROM usessumace 
+	JOIN usesradky ON (usesradky.idsesradky = usessumace.idsesradky) 
+	WHERE idsestavy = (SELECT * FROM idsestavy_vys) 
+		OR idsestavy = (SELECT * FROM idsestavy_roz)
+	UNION ALL
+	SELECT u.idsessumace, u.idsesradkysum, u.idsesradky, usesradky.nazev AS nazev, usesradky.oznaceni AS oznaceni, u.prevratznam, usesradky.idsestavy, 1 + hloubka AS hloubka
+	FROM rec_usessumace ru,  usessumace u
+	JOIN usesradky ON (usesradky.idsesradky = u.idsesradky)
+	WHERE ru.idsesradkysum = u.idsesradky
+),
+hloubka_radky_cela AS (
+	/**
+	* Ve struktuře pořadí (hloubky) sumace nechá jen ty nejvyšší hodnoty, nižší pořadí
+	*/
+	SELECT  nazev, oznaceni, idsesradkysum, idsesradky, prevratznam, MAX(hloubka) AS hloubka
+	FROM rec_usessumace
+	GROUP BY idsesradkysum, idsesradky, nazev, oznaceni, prevratznam
+	ORDER BY hloubka DESC, idsesradky, nazev
+), max_hloubka AS (
+	SELECT MAX(hloubka) AS max_hloubka_num FROM hloubka_radky_cela
+), uobraty_obrat AS (
+	/**
+	* Spočítá rozdíl obratů a propjí tabulku obratů s analytickými účty (uucty)
+	*/
+	SELECT kod, nazev, SUM(obrmd - obrdal) AS obrat, obdobi, rok, druhuctuk, typuctuk, iducetobdobi, iducet
+	FROM uobraty 
+	JOIN uucty USING(iducet)
+	WHERE obdobi <= 12
+		AND uobraty.idmeny = 31
+		AND uobraty.iducetobdobi = (SELECT * FROM curr_ucetobdobi)
+		AND kod ~ '(^[0-6]){1}.*'
+	GROUP BY kod, nazev, obdobi, rok, druhuctuk, typuctuk, iducetobdobi, iducet
+	ORDER BY iducetobdobi, kod, obdobi
+),
+uobraty_obrat_0_12 AS (
+	SELECT kod, nazev, 
+			COALESCE( SUM(CASE WHEN (obdobi = 0) THEN obrat END), 0) AS obrat_poc,	
+			COALESCE( SUM(CASE WHEN (obdobi = 1) THEN obrat END), 0) AS obrat_1,
+			COALESCE( SUM(CASE WHEN (obdobi = 2) THEN obrat END), 0) AS obrat_2,
+			COALESCE( SUM(CASE WHEN (obdobi = 3) THEN obrat END), 0) AS obrat_3,
+			COALESCE( SUM(CASE WHEN (obdobi = 4) THEN obrat END), 0) AS obrat_4,
+			COALESCE( SUM(CASE WHEN (obdobi = 5) THEN obrat END), 0) AS obrat_5,
+			COALESCE( SUM(CASE WHEN (obdobi = 6) THEN obrat END), 0) AS obrat_6,
+			COALESCE( SUM(CASE WHEN (obdobi = 7) THEN obrat END), 0) AS obrat_7,
+			COALESCE( SUM(CASE WHEN (obdobi = 8) THEN obrat END), 0) AS obrat_8,
+			COALESCE( SUM(CASE WHEN (obdobi = 9) THEN obrat END), 0) AS obrat_9,
+			COALESCE( SUM(CASE WHEN (obdobi = 10) THEN obrat END), 0) AS obrat_10,
+			COALESCE( SUM(CASE WHEN (obdobi = 11) THEN obrat END), 0) AS obrat_11,
+			COALESCE( SUM(CASE WHEN (obdobi = 12) THEN obrat END), 0) AS obrat_12,
+	rok, druhuctuk, typuctuk, iducetobdobi, iducet
+	FROM uobraty_obrat 
+	GROUP BY kod, nazev, rok, druhuctuk, typuctuk, iducetobdobi, iducet
+), uobraty_stav_0_12 AS (
+	SELECT kod, nazev, obrat_poc, obrat_1, obrat_poc + obrat_1 AS stav_1, 
+		obrat_2, obrat_poc + obrat_1 + obrat_2 AS stav_2,  
+	    obrat_3, obrat_poc + obrat_1 + obrat_2 + obrat_3 AS stav_3, 
+		obrat_4, obrat_poc + obrat_1 + obrat_2 + obrat_3 + obrat_4 AS stav_4, 
+		obrat_5, obrat_poc + obrat_1 + obrat_2 + obrat_3 + obrat_4 + obrat_5 AS stav_5, 
+		obrat_6, obrat_poc + obrat_1 + obrat_2 + obrat_3 + obrat_4 + obrat_5 + obrat_6 AS stav_6,
+		obrat_7, obrat_poc + obrat_1 + obrat_2 + obrat_3 + obrat_4 + obrat_5 + obrat_6 + obrat_7 AS stav_7, 
+		obrat_8, obrat_poc + obrat_1 + obrat_2 + obrat_3 + obrat_4 + obrat_5 + obrat_6 +
+		obrat_7 + obrat_8 AS  stav_8, 
+		obrat_9, obrat_poc + obrat_1 + obrat_2 + obrat_3 + obrat_4 + obrat_5 + obrat_6 +
+		obrat_7 + obrat_8 + obrat_9 AS stav_9, 
+		obrat_10, obrat_poc + obrat_1 + obrat_2 + obrat_3 + obrat_4 + obrat_5 + obrat_6 +
+		obrat_7 + obrat_8 + obrat_9 + obrat_10 AS stav_10,
+		obrat_11, obrat_poc + obrat_1 + obrat_2 + obrat_3 + obrat_4 + obrat_5 + obrat_6 +
+		obrat_7 + obrat_8 + obrat_9 + obrat_10 + obrat_11 AS stav_11, 
+		obrat_12, obrat_poc + obrat_1 + obrat_2 + obrat_3 + obrat_4 + obrat_5 + obrat_6 +
+		obrat_7 + obrat_8 + obrat_9 + obrat_10 + obrat_11 + obrat_12 AS stav_12,
+		(obrat_1 + obrat_2 + obrat_3 + obrat_4 + obrat_5 + obrat_6 +
+		obrat_7 + obrat_8 + obrat_9 + obrat_10 + obrat_11 + obrat_12) AS obrat_celkem,
+	    (obrat_poc + obrat_1 + obrat_2 + obrat_3 + obrat_4 + obrat_5 + obrat_6 +
+		obrat_7 + obrat_8 + obrat_9 + obrat_10 + obrat_11 + obrat_12) AS stav_celkem, 
+		rok, druhuctuk, typuctuk, iducetobdobi, iducet
+	FROM uobraty_obrat_0_12
+), uobraty_aktpas AS ( 
+	/**
+	* Když ustducty.druhuctuk 'druhUctu.aktpasvy', 'druhUctu.aktpasvo', tak druhuctuk podle rozdílu
+	* obratu md - dal aktivni či pasivni. V této chvíly by měl být null nebo "druhUctu.aktpasvy".
+	*/
+	SELECT u.kod, u.nazev, obrat_poc, obrat_1, stav_1, obrat_2, stav_2, obrat_3, stav_3, 
+		obrat_4, stav_4, obrat_5, stav_5, obrat_6, stav_6, obrat_7, stav_7, 
+		obrat_8, stav_8, obrat_9, stav_9, obrat_10, stav_10, obrat_11, stav_11, 
+		obrat_12, stav_12, obrat_celkem, stav_celkem, u.rok, 
+		(CASE WHEN ( u.druhuctuk IN ( 'druhUctu.aktpasvy', 'druhUctu.aktpasvo' )
+				   OR u.druhuctuk IS null) 
+			THEN (CASE WHEN (stav_celkem < 0) THEN 'druhUctu.pasivni'
+				ELSE  'druhUctu.aktivni'
+			END) 		
+		ELSE u.druhuctuk
+		END) AS druhuctuk,
+		(CASE 
+		 	WHEN ( u.druhuctuk IN ( 'druhUctu.aktpasvy', 'druhUctu.aktpasvo' ) 
+				 OR u.druhuctuk IS null) 
+				THEN (CASE WHEN (stav_celkem < 0) THEN true
+					ELSE  false
+				END)
+		 	WHEN ( u.druhuctuk IN ( 'druhUctu.aktivni', 'druhUctu.naklady' ) ) -- ( 'druhUctu.aktivni', 'druhUctu.vynosy' ) ) 
+		 		THEN false
+		 	WHEN ( u.druhuctuk IN ( 'druhUctu.pasivni', 'druhUctu.vynosy', 'druhUctu.pasivhvy' ) ) -- ( 'druhUctu.pasivni', 'druhUctu.naklady' ) )
+		 		THEN true	
+		 	ELSE false
+		END) AS prevratznam,
+		u.typuctuk, u.iducetobdobi, u.iducet
+	FROM uobraty_stav_0_12 AS u
+), uobraty_prevratznam AS (
+	/**
+	* K převratu znamének, mohlo dojít až po rozdělení druhUctu.aktpasvy/o na
+	* aktivní a pasivní a to šlo až po sečtení celého roku.
+	* po protože nejdřív je potřeba
+	*/
+	SELECT kod, nazev, 
+	(CASE WHEN (prevratznam = true) THEN - obrat_poc ELSE obrat_poc END) AS obrat_poc,
+	
+	(CASE WHEN (prevratznam = true) THEN - obrat_1 ELSE obrat_poc END) AS obrat_1,
+	(CASE WHEN (prevratznam = true) THEN - stav_1 ELSE stav_1 END) AS stav_1,
+	(CASE WHEN (prevratznam = true) THEN - obrat_2 ELSE obrat_2 END) AS obrat_2,
+	(CASE WHEN (prevratznam = true) THEN - stav_2 ELSE stav_2 END) AS stav_2,
+	(CASE WHEN (prevratznam = true) THEN - obrat_3 ELSE obrat_3 END) AS obrat_3,
+	(CASE WHEN (prevratznam = true) THEN - stav_3 ELSE stav_3 END) AS stav_3,
+	(CASE WHEN (prevratznam = true) THEN - obrat_4 ELSE obrat_4 END) AS obrat_4,
+	(CASE WHEN (prevratznam = true) THEN - stav_4 ELSE stav_4 END) AS stav_4,
+	(CASE WHEN (prevratznam = true) THEN - obrat_5 ELSE obrat_5 END) AS obrat_5,
+	(CASE WHEN (prevratznam = true) THEN - stav_5 ELSE stav_5 END) AS stav_5,
+	(CASE WHEN (prevratznam = true) THEN - obrat_6 ELSE obrat_6 END) AS obrat_6,
+	(CASE WHEN (prevratznam = true) THEN - stav_6 ELSE stav_6 END) AS stav_6,
+	(CASE WHEN (prevratznam = true) THEN - obrat_7 ELSE obrat_7 END) AS obrat_7,
+	(CASE WHEN (prevratznam = true) THEN - stav_7 ELSE stav_7 END) AS stav_7,
+	(CASE WHEN (prevratznam = true) THEN - obrat_8 ELSE obrat_8 END) AS obrat_8,
+	(CASE WHEN (prevratznam = true) THEN - stav_8 ELSE stav_8 END) AS stav_8,
+	(CASE WHEN (prevratznam = true) THEN - obrat_9 ELSE obrat_9 END) AS obrat_9,
+	(CASE WHEN (prevratznam = true) THEN - stav_9 ELSE stav_9 END) AS stav_9,
+	(CASE WHEN (prevratznam = true) THEN - obrat_10 ELSE obrat_10 END) AS obrat_10,
+	(CASE WHEN (prevratznam = true) THEN - stav_10 ELSE stav_10 END) AS stav_10,
+	(CASE WHEN (prevratznam = true) THEN - obrat_11 ELSE obrat_11 END) AS obrat_11,
+	(CASE WHEN (prevratznam = true) THEN - stav_11 ELSE stav_11 END) AS stav_11,
+	(CASE WHEN (prevratznam = true) THEN - obrat_12 ELSE obrat_12 END) AS obrat_12,
+	(CASE WHEN (prevratznam = true) THEN - stav_12 ELSE stav_12 END) AS stav_12,
+	(CASE WHEN (prevratznam = true) THEN - obrat_celkem ELSE obrat_celkem END) AS obrat_celkem,
+	(CASE WHEN (prevratznam = true) THEN - stav_celkem ELSE stav_celkem END) AS stav_celkem,
+	rok, druhuctuk, prevratznam, typuctuk, iducetobdobi, iducet
+	FROM uobraty_aktpas
+), uobraty_usesuzivpred AS (
+	SELECT usesradky.nazev AS nazev_radky, usesradky.oznaceni, u.*, usesradky.idsesradky, 
+	(SELECT * FROM max_hloubka) + 1 AS hloubka
+	FROM uobraty_prevratznam u /* uobraty_stav_0_12 */
+	LEFT JOIN usesuzivpred ON (usesuzivpred.iducet = u.iducet
+		AND usesuzivpred.prevratznam = u.prevratznam)
+	LEFT JOIN usesradky ON usesradky.idsesradky = usesuzivpred.idsesradky
+	JOIN usestavy ON usestavy.idsestavy = usesradky.idsestavy
+	WHERE usestavy.idsestavy = (SELECT * FROM idsestavy_vys) 
+ 			OR usestavy.idsestavy = (SELECT * FROM idsestavy_roz)
+	
+), uobraty_hloubka8 AS (
+	/**
+	* Postupně se přenáší hodnoty z obratů účtu strukturou sumace sestavy
+	*
+	* Může se změnit! Hlobka struktury sumace výkazu je maximálně 8 viz (SELECT * FROM max_hloubka)
+	* Rekurze mi nešla. Hodnoty se musí teprve doplnit od hloubky 8 a kořen je v hloubce 0.
+	*/	
+	SELECT h.nazev, h.oznaceni, u.kod, u.nazev AS nazev_uctu, 		
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_poc ELSE u.obrat_poc END AS obrat_poc,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_1 ELSE u.obrat_1 END AS obrat_1,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_1 ELSE u.stav_1 END AS stav_1,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_2 ELSE u.obrat_2 END AS obrat_2,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_2 ELSE u.stav_2 END AS stav_2,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_3 ELSE u.obrat_3 END AS obrat_3,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_3 ELSE u.stav_3 END AS stav_3,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_4 ELSE u.obrat_4 END AS obrat_4,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_4 ELSE u.stav_4 END AS stav_4,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_5 ELSE u.obrat_5 END AS obrat_5,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_5 ELSE u.stav_5 END AS stav_5,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_6 ELSE u.obrat_6 END AS obrat_6,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_6 ELSE u.stav_6 END AS stav_6,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_7 ELSE u.obrat_7 END AS obrat_7,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_7 ELSE u.stav_7 END AS stav_7,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_8  ELSE u.obrat_8  END AS obrat_8,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_8 ELSE u.stav_8 END AS stav_8,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_9 ELSE u.obrat_9 END AS obrat_9,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_9 ELSE u.stav_9 END AS stav_9,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_10 ELSE u.obrat_10 END AS obrat_10,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_10 ELSE u.stav_10 END AS stav_10,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_11 ELSE u.obrat_11 END AS obrat_11,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_11 ELSE u.stav_11 END AS stav_11,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_12 ELSE u.obrat_12 END AS obrat_12,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_12 ELSE u.stav_12 END AS stav_12,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_celkem ELSE u.obrat_celkem END AS obrat_celkem,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_celkem ELSE u.stav_celkem END AS stav_celkem,
+		u.rok, u.druhuctuk, h.prevratznam, u.typuctuk, u.iducetobdobi, 
+		u.iducet, h.idsesradky, h.hloubka
+	FROM uobraty_usesuzivpred AS u
+	JOIN hloubka_radky_cela AS h ON (h.idsesradkysum = u.idsesradky )
+	WHERE h.hloubka = 8
+	UNION ALL
+	SELECT * FROM uobraty_usesuzivpred
+), uobraty_hloubka7 AS (
+	SELECT h.nazev, h.oznaceni, u.kod, u.nazev AS nazev_uctu, 		
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_poc ELSE u.obrat_poc END AS obrat_poc,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_1 ELSE u.obrat_1 END AS obrat_1,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_1 ELSE u.stav_1 END AS stav_1,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_2 ELSE u.obrat_2 END AS obrat_2,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_2 ELSE u.stav_2 END AS stav_2,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_3 ELSE u.obrat_3 END AS obrat_3,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_3 ELSE u.stav_3 END AS stav_3,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_4 ELSE u.obrat_4 END AS obrat_4,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_4 ELSE u.stav_4 END AS stav_4,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_5 ELSE u.obrat_5 END AS obrat_5,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_5 ELSE u.stav_5 END AS stav_5,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_6 ELSE u.obrat_6 END AS obrat_6,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_6 ELSE u.stav_6 END AS stav_6,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_7 ELSE u.obrat_7 END AS obrat_7,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_7 ELSE u.stav_7 END AS stav_7,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_8  ELSE u.obrat_8  END AS obrat_8,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_8 ELSE u.stav_8 END AS stav_8,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_9 ELSE u.obrat_9 END AS obrat_9,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_9 ELSE u.stav_9 END AS stav_9,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_10 ELSE u.obrat_10 END AS obrat_10,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_10 ELSE u.stav_10 END AS stav_10,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_11 ELSE u.obrat_11 END AS obrat_11,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_11 ELSE u.stav_11 END AS stav_11,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_12 ELSE u.obrat_12 END AS obrat_12,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_12 ELSE u.stav_12 END AS stav_12,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_celkem ELSE u.obrat_celkem END AS obrat_celkem,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_celkem ELSE u.stav_celkem END AS stav_celkem,
+		u.rok, u.druhuctuk, h.prevratznam, u.typuctuk, u.iducetobdobi, 
+		u.iducet, h.idsesradky, h.hloubka
+	FROM uobraty_hloubka8 AS u
+	JOIN hloubka_radky_cela AS h ON (h.idsesradkysum = u.idsesradky )
+	WHERE h.hloubka = 7
+	UNION ALL
+	SELECT * FROM uobraty_hloubka8
+), uobraty_hloubka6 AS (
+	SELECT h.nazev, h.oznaceni, u.kod, u.nazev AS nazev_uctu, 		
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_poc ELSE u.obrat_poc END AS obrat_poc,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_1 ELSE u.obrat_1 END AS obrat_1,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_1 ELSE u.stav_1 END AS stav_1,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_2 ELSE u.obrat_2 END AS obrat_2,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_2 ELSE u.stav_2 END AS stav_2,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_3 ELSE u.obrat_3 END AS obrat_3,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_3 ELSE u.stav_3 END AS stav_3,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_4 ELSE u.obrat_4 END AS obrat_4,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_4 ELSE u.stav_4 END AS stav_4,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_5 ELSE u.obrat_5 END AS obrat_5,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_5 ELSE u.stav_5 END AS stav_5,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_6 ELSE u.obrat_6 END AS obrat_6,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_6 ELSE u.stav_6 END AS stav_6,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_7 ELSE u.obrat_7 END AS obrat_7,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_7 ELSE u.stav_7 END AS stav_7,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_8  ELSE u.obrat_8  END AS obrat_8,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_8 ELSE u.stav_8 END AS stav_8,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_9 ELSE u.obrat_9 END AS obrat_9,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_9 ELSE u.stav_9 END AS stav_9,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_10 ELSE u.obrat_10 END AS obrat_10,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_10 ELSE u.stav_10 END AS stav_10,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_11 ELSE u.obrat_11 END AS obrat_11,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_11 ELSE u.stav_11 END AS stav_11,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_12 ELSE u.obrat_12 END AS obrat_12,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_12 ELSE u.stav_12 END AS stav_12,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_celkem ELSE u.obrat_celkem END AS obrat_celkem,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_celkem ELSE u.stav_celkem END AS stav_celkem,
+		u.rok, u.druhuctuk, h.prevratznam, u.typuctuk, u.iducetobdobi, 
+		u.iducet, h.idsesradky, h.hloubka
+	FROM uobraty_hloubka7 AS u
+	JOIN hloubka_radky_cela AS h ON (h.idsesradkysum = u.idsesradky )
+	WHERE h.hloubka = 6
+	UNION ALL
+	SELECT * FROM uobraty_hloubka7
+), uobraty_hloubka5 AS (
+	SELECT h.nazev, h.oznaceni, u.kod, u.nazev AS nazev_uctu, 		
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_poc ELSE u.obrat_poc END AS obrat_poc,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_1 ELSE u.obrat_1 END AS obrat_1,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_1 ELSE u.stav_1 END AS stav_1,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_2 ELSE u.obrat_2 END AS obrat_2,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_2 ELSE u.stav_2 END AS stav_2,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_3 ELSE u.obrat_3 END AS obrat_3,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_3 ELSE u.stav_3 END AS stav_3,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_4 ELSE u.obrat_4 END AS obrat_4,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_4 ELSE u.stav_4 END AS stav_4,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_5 ELSE u.obrat_5 END AS obrat_5,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_5 ELSE u.stav_5 END AS stav_5,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_6 ELSE u.obrat_6 END AS obrat_6,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_6 ELSE u.stav_6 END AS stav_6,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_7 ELSE u.obrat_7 END AS obrat_7,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_7 ELSE u.stav_7 END AS stav_7,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_8  ELSE u.obrat_8  END AS obrat_8,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_8 ELSE u.stav_8 END AS stav_8,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_9 ELSE u.obrat_9 END AS obrat_9,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_9 ELSE u.stav_9 END AS stav_9,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_10 ELSE u.obrat_10 END AS obrat_10,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_10 ELSE u.stav_10 END AS stav_10,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_11 ELSE u.obrat_11 END AS obrat_11,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_11 ELSE u.stav_11 END AS stav_11,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_12 ELSE u.obrat_12 END AS obrat_12,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_12 ELSE u.stav_12 END AS stav_12,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_celkem ELSE u.obrat_celkem END AS obrat_celkem,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_celkem ELSE u.stav_celkem END AS stav_celkem,
+		u.rok, u.druhuctuk, h.prevratznam, u.typuctuk, u.iducetobdobi, 
+		u.iducet, h.idsesradky, h.hloubka
+	FROM uobraty_hloubka6 AS u
+	JOIN hloubka_radky_cela AS h ON (h.idsesradkysum = u.idsesradky )
+	WHERE h.hloubka = 5
+	UNION ALL
+	SELECT * FROM uobraty_hloubka6
+), uobraty_hloubka4 AS ( 
+	SELECT h.nazev, h.oznaceni, u.kod, u.nazev AS nazev_uctu, 		
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_poc ELSE u.obrat_poc END AS obrat_poc,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_1 ELSE u.obrat_1 END AS obrat_1,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_1 ELSE u.stav_1 END AS stav_1,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_2 ELSE u.obrat_2 END AS obrat_2,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_2 ELSE u.stav_2 END AS stav_2,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_3 ELSE u.obrat_3 END AS obrat_3,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_3 ELSE u.stav_3 END AS stav_3,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_4 ELSE u.obrat_4 END AS obrat_4,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_4 ELSE u.stav_4 END AS stav_4,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_5 ELSE u.obrat_5 END AS obrat_5,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_5 ELSE u.stav_5 END AS stav_5,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_6 ELSE u.obrat_6 END AS obrat_6,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_6 ELSE u.stav_6 END AS stav_6,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_7 ELSE u.obrat_7 END AS obrat_7,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_7 ELSE u.stav_7 END AS stav_7,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_8  ELSE u.obrat_8  END AS obrat_8,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_8 ELSE u.stav_8 END AS stav_8,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_9 ELSE u.obrat_9 END AS obrat_9,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_9 ELSE u.stav_9 END AS stav_9,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_10 ELSE u.obrat_10 END AS obrat_10,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_10 ELSE u.stav_10 END AS stav_10,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_11 ELSE u.obrat_11 END AS obrat_11,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_11 ELSE u.stav_11 END AS stav_11,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_12 ELSE u.obrat_12 END AS obrat_12,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_12 ELSE u.stav_12 END AS stav_12,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_celkem ELSE u.obrat_celkem END AS obrat_celkem,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_celkem ELSE u.stav_celkem END AS stav_celkem,
+		u.rok, u.druhuctuk, h.prevratznam, u.typuctuk, u.iducetobdobi, 
+		u.iducet, h.idsesradky, h.hloubka
+	FROM uobraty_hloubka5 AS u
+	JOIN hloubka_radky_cela AS h ON (h.idsesradkysum = u.idsesradky )
+	WHERE h.hloubka = 4
+	UNION ALL
+	SELECT * FROM uobraty_hloubka5
+), uobraty_hloubka3 AS ( 
+	SELECT h.nazev, h.oznaceni, u.kod, u.nazev AS nazev_uctu, 		
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_poc ELSE u.obrat_poc END AS obrat_poc,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_1 ELSE u.obrat_1 END AS obrat_1,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_1 ELSE u.stav_1 END AS stav_1,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_2 ELSE u.obrat_2 END AS obrat_2,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_2 ELSE u.stav_2 END AS stav_2,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_3 ELSE u.obrat_3 END AS obrat_3,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_3 ELSE u.stav_3 END AS stav_3,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_4 ELSE u.obrat_4 END AS obrat_4,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_4 ELSE u.stav_4 END AS stav_4,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_5 ELSE u.obrat_5 END AS obrat_5,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_5 ELSE u.stav_5 END AS stav_5,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_6 ELSE u.obrat_6 END AS obrat_6,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_6 ELSE u.stav_6 END AS stav_6,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_7 ELSE u.obrat_7 END AS obrat_7,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_7 ELSE u.stav_7 END AS stav_7,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_8  ELSE u.obrat_8  END AS obrat_8,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_8 ELSE u.stav_8 END AS stav_8,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_9 ELSE u.obrat_9 END AS obrat_9,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_9 ELSE u.stav_9 END AS stav_9,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_10 ELSE u.obrat_10 END AS obrat_10,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_10 ELSE u.stav_10 END AS stav_10,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_11 ELSE u.obrat_11 END AS obrat_11,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_11 ELSE u.stav_11 END AS stav_11,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_12 ELSE u.obrat_12 END AS obrat_12,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_12 ELSE u.stav_12 END AS stav_12,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_celkem ELSE u.obrat_celkem END AS obrat_celkem,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_celkem ELSE u.stav_celkem END AS stav_celkem,
+		u.rok, u.druhuctuk, h.prevratznam, u.typuctuk, u.iducetobdobi, 
+		u.iducet, h.idsesradky, h.hloubka
+	FROM uobraty_hloubka4 AS u
+	JOIN hloubka_radky_cela AS h ON (h.idsesradkysum = u.idsesradky )
+	WHERE h.hloubka = 3
+	UNION ALL
+	SELECT * FROM uobraty_hloubka4
+), uobraty_hloubka2 AS (
+	SELECT h.nazev, h.oznaceni, u.kod, u.nazev AS nazev_uctu, 		
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_poc ELSE u.obrat_poc END AS obrat_poc,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_1 ELSE u.obrat_1 END AS obrat_1,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_1 ELSE u.stav_1 END AS stav_1,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_2 ELSE u.obrat_2 END AS obrat_2,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_2 ELSE u.stav_2 END AS stav_2,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_3 ELSE u.obrat_3 END AS obrat_3,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_3 ELSE u.stav_3 END AS stav_3,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_4 ELSE u.obrat_4 END AS obrat_4,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_4 ELSE u.stav_4 END AS stav_4,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_5 ELSE u.obrat_5 END AS obrat_5,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_5 ELSE u.stav_5 END AS stav_5,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_6 ELSE u.obrat_6 END AS obrat_6,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_6 ELSE u.stav_6 END AS stav_6,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_7 ELSE u.obrat_7 END AS obrat_7,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_7 ELSE u.stav_7 END AS stav_7,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_8  ELSE u.obrat_8  END AS obrat_8,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_8 ELSE u.stav_8 END AS stav_8,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_9 ELSE u.obrat_9 END AS obrat_9,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_9 ELSE u.stav_9 END AS stav_9,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_10 ELSE u.obrat_10 END AS obrat_10,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_10 ELSE u.stav_10 END AS stav_10,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_11 ELSE u.obrat_11 END AS obrat_11,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_11 ELSE u.stav_11 END AS stav_11,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_12 ELSE u.obrat_12 END AS obrat_12,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_12 ELSE u.stav_12 END AS stav_12,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_celkem ELSE u.obrat_celkem END AS obrat_celkem,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_celkem ELSE u.stav_celkem END AS stav_celkem,
+		u.rok, u.druhuctuk, h.prevratznam, u.typuctuk, u.iducetobdobi, 
+		u.iducet, h.idsesradky, h.hloubka
+	FROM uobraty_hloubka3 AS u
+	JOIN hloubka_radky_cela AS h ON (h.idsesradkysum = u.idsesradky )
+	WHERE h.hloubka = 2
+	UNION ALL
+	SELECT * FROM uobraty_hloubka3
+), uobraty_hloubka1 AS (
+	SELECT h.nazev, h.oznaceni, u.kod, u.nazev AS nazev_uctu, 		
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_poc ELSE u.obrat_poc END AS obrat_poc,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_1 ELSE u.obrat_1 END AS obrat_1,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_1 ELSE u.stav_1 END AS stav_1,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_2 ELSE u.obrat_2 END AS obrat_2,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_2 ELSE u.stav_2 END AS stav_2,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_3 ELSE u.obrat_3 END AS obrat_3,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_3 ELSE u.stav_3 END AS stav_3,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_4 ELSE u.obrat_4 END AS obrat_4,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_4 ELSE u.stav_4 END AS stav_4,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_5 ELSE u.obrat_5 END AS obrat_5,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_5 ELSE u.stav_5 END AS stav_5,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_6 ELSE u.obrat_6 END AS obrat_6,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_6 ELSE u.stav_6 END AS stav_6,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_7 ELSE u.obrat_7 END AS obrat_7,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_7 ELSE u.stav_7 END AS stav_7,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_8  ELSE u.obrat_8  END AS obrat_8,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_8 ELSE u.stav_8 END AS stav_8,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_9 ELSE u.obrat_9 END AS obrat_9,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_9 ELSE u.stav_9 END AS stav_9,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_10 ELSE u.obrat_10 END AS obrat_10,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_10 ELSE u.stav_10 END AS stav_10,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_11 ELSE u.obrat_11 END AS obrat_11,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_11 ELSE u.stav_11 END AS stav_11,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_12 ELSE u.obrat_12 END AS obrat_12,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_12 ELSE u.stav_12 END AS stav_12,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_celkem ELSE u.obrat_celkem END AS obrat_celkem,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_celkem ELSE u.stav_celkem END AS stav_celkem,
+		u.rok, u.druhuctuk, h.prevratznam, u.typuctuk, u.iducetobdobi, 
+		u.iducet, h.idsesradky, h.hloubka
+	FROM uobraty_hloubka2 AS u
+	JOIN hloubka_radky_cela AS h ON (h.idsesradkysum = u.idsesradky )
+	WHERE h.hloubka = 1
+	UNION ALL
+	SELECT * FROM uobraty_hloubka2
+), uobraty_hloubka_null AS (
+	/**
+	* hloubka null mají ty nevyšší ze struktury sumace (usessumace). 
+	*/
+	SELECT h.nazev, h.oznaceni, u.kod, u.nazev AS nazev_uctu, 		
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_poc ELSE u.obrat_poc END AS obrat_poc,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_1 ELSE u.obrat_1 END AS obrat_1,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_1 ELSE u.stav_1 END AS stav_1,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_2 ELSE u.obrat_2 END AS obrat_2,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_2 ELSE u.stav_2 END AS stav_2,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_3 ELSE u.obrat_3 END AS obrat_3,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_3 ELSE u.stav_3 END AS stav_3,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_4 ELSE u.obrat_4 END AS obrat_4,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_4 ELSE u.stav_4 END AS stav_4,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_5 ELSE u.obrat_5 END AS obrat_5,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_5 ELSE u.stav_5 END AS stav_5,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_6 ELSE u.obrat_6 END AS obrat_6,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_6 ELSE u.stav_6 END AS stav_6,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_7 ELSE u.obrat_7 END AS obrat_7,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_7 ELSE u.stav_7 END AS stav_7,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_8  ELSE u.obrat_8  END AS obrat_8,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_8 ELSE u.stav_8 END AS stav_8,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_9 ELSE u.obrat_9 END AS obrat_9,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_9 ELSE u.stav_9 END AS stav_9,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_10 ELSE u.obrat_10 END AS obrat_10,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_10 ELSE u.stav_10 END AS stav_10,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_11 ELSE u.obrat_11 END AS obrat_11,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_11 ELSE u.stav_11 END AS stav_11,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_12 ELSE u.obrat_12 END AS obrat_12,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_12 ELSE u.stav_12 END AS stav_12,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.obrat_celkem ELSE u.obrat_celkem END AS obrat_celkem,
+		CASE WHEN ( h.prevratznam = true ) THEN - u.stav_celkem ELSE u.stav_celkem END AS stav_celkem,
+		u.rok, u.druhuctuk, h.prevratznam, u.typuctuk, u.iducetobdobi, 
+		u.iducet, h.idsesradky, h.hloubka
+	FROM uobraty_hloubka1 AS u
+	JOIN hloubka_radky_cela AS h ON (h.idsesradkysum = u.idsesradky )
+	WHERE h.hloubka IS null
+	UNION ALL
+	SELECT * FROM uobraty_hloubka1
+), vykaz_sum AS (
+	/**
+	* Zde by mohla být úprava pořadí a výběr výpočtu
+	*
+	* Kontrolní dotaz. Používá funkce agregace pole, které se v uživatelském dotazu 
+	* ve Flexibee nedají použít. Spustí chybu i zakomentované, proto jsou upraveny.
+	*
+	* SELECT nazev, oznaceni, idsesradky, SUM(obrat_celkem), SUM(stav_celkem), ar ray_agg(obrat_celkem), ar ray_agg(stav_celkem), ar ray_agg(kod)
+	* FROM vykaz
+	* GROUP BY nazev, oznaceni, idsesradky
+	* ORDER BY idsesradky
+	*/
+	SELECT nazev, oznaceni, idsesradky,	
+		SUM(obrat_poc) AS obrat_poc, 
+		SUM(obrat_1) AS obrat_1, SUM(stav_1) AS stav_1,
+		SUM(obrat_2) AS obrat_2, SUM(stav_2) AS stav_2,
+		SUM(obrat_3) AS obrat_3, SUM(stav_3) AS stav_3,
+		SUM(obrat_4) AS obrat_4, SUM(stav_4) AS stav_4,
+		SUM(obrat_5) AS obrat_5, SUM(stav_5) AS stav_5,
+		SUM(obrat_6) AS obrat_6, SUM(stav_6) AS stav_6,
+		SUM(obrat_7) AS obrat_7, SUM(stav_7) AS stav_7,
+		SUM(obrat_8) AS obrat_8, SUM(stav_8) AS stav_8,
+		SUM(obrat_9) AS obrat_9, SUM(stav_9) AS stav_9,
+		SUM(obrat_10) AS obrat_10, SUM(stav_10) AS stav_10,
+		SUM(obrat_11) AS obrat_11, SUM(stav_11) AS stav_11,
+		SUM(obrat_12) AS obrat_12, SUM(stav_12) AS stav_12,
+		SUM(obrat_celkem) AS obrat_celkem, SUM(stav_celkem) AS stav_celkem
+	FROM uobraty_hloubka_null
+	GROUP BY nazev, oznaceni, idsesradky
+	ORDER BY idsesradky
+), vykaz AS (
+/**
+* typsesk a cisrad
+*/
+SELECT vykaz_sum.*, typsesk, cisrad 
+FROM vykaz_sum
+JOIN usesradky USING (idsesradky)
+JOIN usestavy USING (idsestavy)
+), vykaz_hodnota AS (
+	/**
+	* Sjednoceni obratu a stavu do hodnoty
+	*/
+	SELECT ur.nazev, ur.oznaceni, ur.idsesradky,	
+		COALESCE( CASE WHEN (us.typsesk = 'typSestavy.rozvaha') THEN obrat_poc
+	 		WHEN (us.typsesk = 'typSestavy.vysledov') THEN 0
+		END, 0) AS hodnota_poc,
+		COALESCE( CASE WHEN (us.typsesk = 'typSestavy.rozvaha') THEN stav_1
+	 		WHEN (us.typsesk = 'typSestavy.vysledov') THEN obrat_1
+		END, 0) AS hodnota_1,		
+		COALESCE( CASE WHEN (us.typsesk = 'typSestavy.rozvaha') THEN stav_2
+	 		WHEN (us.typsesk = 'typSestavy.vysledov') THEN obrat_2
+		END, 0) AS hodnota_2,
+		COALESCE( CASE WHEN (us.typsesk = 'typSestavy.rozvaha') THEN stav_3
+	 		WHEN (us.typsesk = 'typSestavy.vysledov') THEN obrat_3
+		END, 0) AS hodnota_3,	
+		COALESCE( CASE WHEN (us.typsesk = 'typSestavy.rozvaha') THEN stav_4
+	 		WHEN (us.typsesk = 'typSestavy.vysledov') THEN obrat_4
+		END, 0) AS hodnota_4,
+		COALESCE( CASE WHEN (us.typsesk = 'typSestavy.rozvaha') THEN stav_5
+	 		WHEN (us.typsesk = 'typSestavy.vysledov') THEN obrat_5
+		END, 0) AS hodnota_5,	
+		COALESCE( CASE WHEN (us.typsesk = 'typSestavy.rozvaha') THEN stav_6
+	 		WHEN (us.typsesk = 'typSestavy.vysledov') THEN obrat_6
+		END, 0) AS hodnota_6,
+		COALESCE( CASE WHEN (us.typsesk = 'typSestavy.rozvaha') THEN stav_7
+	 		WHEN (us.typsesk = 'typSestavy.vysledov') THEN obrat_7
+		END, 0) AS hodnota_7,	
+		COALESCE( CASE WHEN (us.typsesk = 'typSestavy.rozvaha') THEN stav_8
+	 		WHEN (us.typsesk = 'typSestavy.vysledov') THEN obrat_8
+		END, 0) AS hodnota_8,
+		COALESCE( CASE WHEN (us.typsesk = 'typSestavy.rozvaha') THEN stav_9
+	 		WHEN (us.typsesk = 'typSestavy.vysledov') THEN obrat_9
+		END, 0) AS hodnota_9,	
+		COALESCE( CASE WHEN (us.typsesk = 'typSestavy.rozvaha') THEN stav_10
+	 		WHEN (us.typsesk = 'typSestavy.vysledov') THEN obrat_10
+		END, 0) AS hodnota_10,	
+		COALESCE( CASE WHEN (us.typsesk = 'typSestavy.rozvaha') THEN stav_11
+	 		WHEN (us.typsesk = 'typSestavy.vysledov') THEN obrat_11
+		END, 0) AS hodnota_11,
+		COALESCE( CASE WHEN (us.typsesk = 'typSestavy.rozvaha') THEN stav_12
+	 		WHEN (us.typsesk = 'typSestavy.vysledov') THEN obrat_12
+		END, 0) AS hodnota_12,	
+		COALESCE( CASE WHEN (us.typsesk = 'typSestavy.rozvaha') THEN stav_celkem
+	 		WHEN (us.typsesk = 'typSestavy.vysledov') THEN obrat_celkem
+		END, 0) AS hodnota_celkem,			
+	us.typsesk, ur.cisrad 
+	FROM vykaz AS v
+	RIGHT JOIN usesradky AS ur ON (ur.idsesradky = v.idsesradky)
+	JOIN usestavy AS us USING (idsestavy)
+	WHERE ur.idsestavy IN ((SELECT * FROM idsestavy_vys),(SELECT * FROM idsestavy_roz))
+), vykaz_uprava2018 AS (
+/** 
+* Uprava pro starsi rozvhu 2016 na rozvahu 2018
+*
+* Dlouhodobý majetek se přjmenoval na Stálá aktiva 
+* Lisi se v nizsich urovnich sestavy, ktere nevstupuji primo do financnich ukazatelu
+* Casove rozliseni ma jina oznaceni
+*
+* Nazvy hornich kategorii se nemeni
+*/
+SELECT 
+	( CASE WHEN (nazev = 'Dlouhodobý majetek') THEN 'Stálá aktiva' 
+		ELSE nazev
+	END) AS nazev,		
+	oznaceni, idsesradky,
+	hodnota_poc, hodnota_1, hodnota_2, hodnota_3, hodnota_4, hodnota_5, hodnota_6,
+	hodnota_7, hodnota_8,hodnota_9, hodnota_10, hodnota_11, hodnota_12, hodnota_celkem,
+	typsesk, cisrad
+FROM vykaz_hodnota
+)
+SELECT 
+	nazev, oznaceni, idsesradky,
+	hodnota_poc AS pocatecni_hodnota, hodnota_1 AS leden, hodnota_2 AS unor, hodnota_3 AS brezen,
+	hodnota_4 AS duben, hodnota_5 AS kveten, hodnota_6 AS cerven,
+	hodnota_7 AS cervenec, hodnota_8 AS srpen, hodnota_9 AS zari, hodnota_10 AS rijen, 
+	hodnota_11 AS listopad, hodnota_12 AS prosinec, hodnota_celkem,
+	typsesk AS typ_sestavy, cisrad AS cislo_radky
+FROM vykaz_uprava2018
+
+
+
